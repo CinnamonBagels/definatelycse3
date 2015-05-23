@@ -21,15 +21,22 @@ import java.util.*;
  */
 public class UserProcess {
 	public boolean isRoot;
-	private LinkedList<ChildProcess> childProcesses;
+	private LinkedList<ChildProcess> childProcesses = new LinkedList<ChildProcess>();
 	
 	public class ChildProcess {
 		public UserProcess process;
 		public int id;
 		public int status;
-		public ChildProcess(UserProcess child, int id) {
+		public UserProcess parent;
+		public DescriptorManager manager;
+		public ChildProcess(UserProcess child, int id, UserProcess parent) {
 			this.process = child;
 			this.id = id;
+			this.parent = parent;
+			activeProcesses++;
+			manager = new DescriptorManager();
+	    	manager.add(0,UserKernel.console.openForReading());
+	    	manager.add(1,UserKernel.console.openForWriting());
 		}
 	}
     /**
@@ -44,12 +51,9 @@ public class UserProcess {
     	manger.add(0,UserKernel.console.openForReading());
     	manger.add(1,UserKernel.console.openForWriting());
     	id = processID++;
-    	if(!this.rootExists) {
-    		this.rootExists = true;
-    		this.isRoot = true;
-    	} else {
-    		this.isRoot = false;
-    	}
+    	activeProcesses++;
+    	activeProcess.add(id);
+    	
     	
     }
     
@@ -158,21 +162,27 @@ public class UserProcess {
 	byte[] memory = Machine.processor().getMemory();
 	
 	// for now, just assume that virtual addresses equal physical addresses
-	if (vaddr < 0 || vaddr >= memory.length)
-	    return 0;
+//	if (vaddr < 0 || vaddr >= memory.length)
+//	    return 0;
 
+	
+	
 	int numbyteTransferred = 0;
 	while(numbyteTransferred < length){
 		int virtualpagenumber = Processor.pageFromAddress(vaddr + numbyteTransferred);
 		if(virtualpagenumber < 0 || virtualpagenumber >= pageTable.length){
 			return 0;
 		}
+//		if(pageTable[virtualpagenumber] != null){
+//			return -1;
+//		}
+		
 		int virtualpageoffset = Processor.offsetFromAddress(vaddr + numbyteTransferred);
 		int byteLeft = pageSize - virtualpageoffset;
-		int amount = Math.min(byteLeft, memory.length-numbyteTransferred);
+		int amount = Math.min(byteLeft, length-numbyteTransferred);
 		
 		int physicalpageaddr = pageTable[virtualpagenumber].ppn* pageSize + virtualpageoffset; 
-		System.arraycopy(memory, physicalpageaddr, data, offset, amount);
+		System.arraycopy(memory, physicalpageaddr, data, offset+numbyteTransferred, amount);
 		numbyteTransferred += amount;
 	}
 
@@ -224,9 +234,12 @@ public class UserProcess {
 		if(virtualpagenumber < 0 || virtualpagenumber >= pageTable.length || pageTable[virtualpagenumber].readOnly){
 			return 0;
 		}
+//		if(pageTable[virtualpagenumber] != null){
+//			return -1;
+//		}
 		int virtualpageoffset = Processor.offsetFromAddress(vaddr + numbyteTransferred);
 		int byteLeft = pageSize - virtualpageoffset;
-		int amount = Math.min(byteLeft, memory.length-numbyteTransferred);
+		int amount = Math.min(byteLeft, length-numbyteTransferred);
 		
 		numbyteTransferred += amount;
 	}
@@ -236,10 +249,10 @@ public class UserProcess {
 		int virtualpagenumber = Processor.pageFromAddress(vaddr + numbyteTransferred);
 		int virtualpageoffset = Processor.offsetFromAddress(vaddr + numbyteTransferred);
 		int byteLeft = pageSize - virtualpageoffset;
-		int amount = Math.min(byteLeft, memory.length-numbyteTransferred);
+		int amount = Math.min(byteLeft, length-numbyteTransferred);
 		
 		int physicalpageaddr = pageTable[virtualpagenumber].ppn* pageSize + virtualpageoffset; 
-		System.arraycopy(memory, physicalpageaddr, data, offset, amount);
+		System.arraycopy(data, offset+numbyteTransferred, memory, physicalpageaddr, amount);
 		numbyteTransferred += amount;
 	}
 
@@ -444,9 +457,9 @@ public class UserProcess {
      */
     private int handleHalt() {
 
-    if(id != 0){
-    	return -1;
-    }
+//    if(id != 1){
+//    	return -1;
+//    }
 	Machine.halt();
 	
 	Lib.assertNotReached("Machine.halt() did not halt machine!");
@@ -630,16 +643,14 @@ public class UserProcess {
 	return 0;
     }
 
-    private int HandleExit(int a0) {
-		// TODO Auto-generated method stub
-    	// TODO Auto-generated method stub
+    private int HandleExit(int a0) {    	
 		exitStatus = a0;
-		
 		/*
 		 * Close all files here
 		 */
-		
+		Lib.debug(dbgProcess, "hue");
 		if(!manger.closeAll()) {
+			Lib.debug(dbgProcess, "Closing files");
 			//error?
 			return -1;
 		}
@@ -652,18 +663,27 @@ public class UserProcess {
 //		for(int i = 0; i < childProcesses.size(); i++) {
 //			childProcesses.get(i).process.handleExit;
 //		}
+
 		
-		if(this.isRoot) {
+		
+		
+		if(this.activeProcesses == 1) {
+			Lib.debug(dbgProcess, "ONLY THING, TERMINATING");
+			coff.close();
 			Kernel.kernel.terminate();
+			Lib.debug(dbgProcess, "Called");
+			
 		} else {
-			this.joinSemaphore.V();
+			Lib.debug(dbgProcess, "Finished call");
 			UThread.finish();
+			this.activeProcesses--;
+			this.joinSemaphore.V();
 		}
 		return a0;
 	}
 
 	private int HandleJoin(int pid, int status) {
-		// TODO Auto-generated method stub
+		 //TODO Auto-generated method stub
 		ChildProcess child;
 		if(pid < 0) {
 			//debug
@@ -696,55 +716,58 @@ public class UserProcess {
 	}
 
 	private int HandleExec(int file, int argc, int argv) {
-		// TODO Auto-generated method stub
-				boolean error;
-				String arguments[];
-				String fileName;
-				byte[] buf = new byte[4];
-				UserProcess child;
+			boolean error;
+			String arguments[];
+			String fileName;
+			byte[] buf = new byte[4];
+			UserProcess child;
+			
+			if(argc < 0) {
+				Lib.debug(dbgProcess, "In exec, argc is < 0");
+				//debug
+				return -1;
+			}
+			
+			if(argv < 0) {
+				Lib.debug(dbgProcess, "In exec, argv is < 0");
+				//debuyg
+				return -1;
+			}
+			
+			fileName = this.readVirtualMemoryString(file,  256);
+			
+			//check filename extenstion .coff?
+			if(fileName == null) {
+				Lib.debug(dbgProcess, "In exec, filename is null");
+				return -1;
+			}
+			
+			arguments = new String[argc];
+			
+			for(int i = 0; i < argc; i++) {
+				if(this.readVirtualMemory(argv + (i * 4), buf) != 4) {
+					//invalid transfer
+					Lib.debug(dbgProcess, "In exec, RVM is != 4");
+					return -1;
+				}
 				
-				if(argc < 0) {
+				arguments[i] = this.readVirtualMemoryString(Lib.bytesToInt(buf, 0), 256);
+				if(arguments[i] == null) {
 					//debug
+					Lib.debug(dbgProcess, "In exec, argument" + i + " null");
 					return -1;
 				}
-				
-				if(argv < 0) {
-					//debuyg
-					return -1;
-				}
-				
-				fileName = this.readVirtualMemoryString(file,  256);
-				
-				//check filename extenstion .coff?
-				if(fileName == null) {
-					//debug
-					return -1;
-				}
-				
-				arguments = new String[argc];
-				
-				for(int i = 0; i < argc; i++) {
-					if(this.readVirtualMemory(argv + (i * 4), buf) != 4) {
-						//invalid transfer
-						return -1;
-					}
-					
-					arguments[i] = this.readVirtualMemoryString(Lib.bytesToInt(buf, 0), 256);
-					if(arguments[i] == null) {
-						//debug
-						return -1;
-					}
-				}
-				child = UserProcess.newUserProcess();
-				ChildProcess cp = new ChildProcess(child, child.id);
-				childProcesses.add(cp);
-				
-				if(!child.execute(fileName, arguments)) {
-					//debug
-					return -1;
-				}
-				
-				return child.id;
+			}
+			child = UserProcess.newUserProcess();
+			ChildProcess cp = new ChildProcess(child, child.id,this);
+			childProcesses.add(cp);
+			
+			if(!child.execute(fileName, arguments)) {
+				Lib.debug(dbgProcess, "In exec, child failed to execute.");
+				return -1;
+			}
+			
+			return child.id;
 	}
 
 	/**
@@ -778,11 +801,11 @@ public class UserProcess {
     }
 
     public class DescriptorManager{
-    	
+    	int size = 0;
     	OpenFile fileOpen[] = new OpenFile[maxFile]; 
     	
     	public boolean closeAll() {
-    		for(int i = 0; i < fileOpen.length; i++) {
+    		for(int i = 0; i < size; i++) {
     			if(this.close(i) < 0) {
     				return false;
     			}
@@ -791,10 +814,12 @@ public class UserProcess {
     		return true;
     	}
     	public int add(int index, OpenFile file) {
+  
     		if(fileOpen[index] == null) {
 				fileOpen[index] = file;
 				if (files.get(file.getName()) == null) {
 					files.put(file.getName(), index);
+					size++;
 					return index;
 				}
 			}
@@ -874,4 +899,9 @@ public class UserProcess {
 	
     private static final int pageSize = Processor.pageSize;
     private static final char dbgProcess = 'a';
+    protected static LinkedList<Integer> activeProcess = new LinkedList<Integer>();
+    
+    protected static UThread UserThread;
+    public UserProcess parent= null;
+    static int activeProcesses = 0;
 }

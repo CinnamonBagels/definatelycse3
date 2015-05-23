@@ -36,48 +36,32 @@ public class UserKernel extends ThreadedKernel {
     
     public static int allocatePage() {
     	int page;
-    	Machine.interrupt().disable();
+    	//Machine.interrupt().disable();
+    	lock.acquire();
     	
     	if(freePages.size() == 0) {
-    		Machine.interrupt().disable();
+    		lock.release();
+    		//Machine.interrupt().disable();
     		return -1;
     	}
     	
     	page = freePages.removeFirst();
-    	Machine.interrupt().enable();
+    	lock.release();
+    	//Machine.interrupt().enable();
 		return page;
     	
     }
     
     public static int deallocatePage(int ppn) {
-    	Machine.interrupt().disable();
-    	freePages.push(ppn);
-    	Machine.interrupt().enable();
+    	//Machine.interrupt().disable();
+    	lock.acquire();
+
+    	freePages.add(ppn);
+    	lock.release();
+    	//Machine.interrupt().enable();
 		return 0;
     }
-    /** 
-     * helper method for removing free pages
-     */
-    public static int removePages(int pid){
-    	lock.acquire();
-    	
-    	if(freePages.size() <= 0) {
-    		return -1;
-    	}
-    	
-    	int result = freePages.remove(pid);
-    	
-    	lock.release();
-    	return result;
-    }
-    public static void releasePages(int pid){
-    	lock.acquire();
-    	if (Machine.processor().getNumPhysPages() > freePages.size()){
-    		freePages.add(pid);
-    	}
-    
-    	lock.release();
-    }
+  
     
     
     
