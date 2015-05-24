@@ -55,7 +55,7 @@ public class UserKernel extends ThreadedKernel {
     public static int deallocatePage(int ppn) {
     	//Machine.interrupt().disable();
     	lock.acquire();
-
+ 
     	freePages.add(ppn);
     	lock.release();
     	//Machine.interrupt().enable();

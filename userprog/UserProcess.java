@@ -20,7 +20,11 @@ import java.util.*;
  * @see	nachos.network.NetProcess
  */
 public class UserProcess {
+	public int execptionCause;
 	public boolean isRoot;
+	public boolean isJoining = false;
+	public boolean isFinished = false;
+	private int execStatus = -2;
 	private LinkedList<ChildProcess> childProcesses = new LinkedList<ChildProcess>();
 	
 	public class ChildProcess {
@@ -28,15 +32,15 @@ public class UserProcess {
 		public int id;
 		public int status;
 		public UserProcess parent;
-		public DescriptorManager manager;
+		//public DescriptorManager manager;
 		public ChildProcess(UserProcess child, int id, UserProcess parent) {
 			this.process = child;
 			this.id = id;
 			this.parent = parent;
-			activeProcesses++;
-			manager = new DescriptorManager();
-	    	manager.add(0,UserKernel.console.openForReading());
-	    	manager.add(1,UserKernel.console.openForWriting());
+			//activeProcesses++;
+//			manager = new DescriptorManager();
+//	    	manager.add(0,UserKernel.console.openForReading());
+//	    	manager.add(1,UserKernel.console.openForWriting());
 		}
 	}
     /**
@@ -51,7 +55,6 @@ public class UserProcess {
     	manger.add(0,UserKernel.console.openForReading());
     	manger.add(1,UserKernel.console.openForWriting());
     	id = processID++;
-    	activeProcesses++;
     	activeProcess.add(id);
     	
     	
@@ -65,6 +68,7 @@ public class UserProcess {
      * @return	a new process of the correct class.
      */
     public static UserProcess newUserProcess() {
+    	activeProcesses += 1;
 	return (UserProcess)Lib.constructObject(Machine.getProcessClassName());
     }
 
@@ -80,8 +84,8 @@ public class UserProcess {
 	if (!load(name, args))
 	    return false;
 	
-	new UThread(this).setName(name).fork();
-
+	UserThread = new UThread(this);
+	UserThread.setName(name).fork();
 	return true;
     }
 
@@ -162,8 +166,8 @@ public class UserProcess {
 	byte[] memory = Machine.processor().getMemory();
 	
 	// for now, just assume that virtual addresses equal physical addresses
-//	if (vaddr < 0 || vaddr >= memory.length)
-//	    return 0;
+	if (vaddr < 0 || vaddr >= memory.length)
+	    return 0;
 
 	
 	
@@ -173,9 +177,7 @@ public class UserProcess {
 		if(virtualpagenumber < 0 || virtualpagenumber >= pageTable.length){
 			return 0;
 		}
-//		if(pageTable[virtualpagenumber] != null){
-//			return -1;
-//		}
+
 		
 		int virtualpageoffset = Processor.offsetFromAddress(vaddr + numbyteTransferred);
 		int byteLeft = pageSize - virtualpageoffset;
@@ -234,9 +236,7 @@ public class UserProcess {
 		if(virtualpagenumber < 0 || virtualpagenumber >= pageTable.length || pageTable[virtualpagenumber].readOnly){
 			return 0;
 		}
-//		if(pageTable[virtualpagenumber] != null){
-//			return -1;
-//		}
+
 		int virtualpageoffset = Processor.offsetFromAddress(vaddr + numbyteTransferred);
 		int byteLeft = pageSize - virtualpageoffset;
 		int amount = Math.min(byteLeft, length-numbyteTransferred);
@@ -377,7 +377,7 @@ public class UserProcess {
 			//debug error
 			
 			/*
-			 * deallocate all pages that were previously allocated 
+			 * deallocaFte all pages that were previously allocated 
 			 */
 			for(int j = 0; j < i; j++) {
 				if(this.pageTable[j].valid) {
@@ -406,8 +406,7 @@ public class UserProcess {
 		int vpn = section.getFirstVPN()+i;
 		ppn = this.pageTable[vpn].ppn;
 
-		// for now, just assume virtual addresses=physical addresses
-		section.loadPage(i, vpn);
+		section.loadPage(i, ppn);
 		if(section.isReadOnly()) pageTable[vpn].readOnly = true;
 	    }
 	}
@@ -457,9 +456,9 @@ public class UserProcess {
      */
     private int handleHalt() {
 
-//    if(id != 1){
-//    	return -1;
-//    }
+    if(id != 0){
+    	return -1;
+    }
 	Machine.halt();
 	
 	Lib.assertNotReached("Machine.halt() did not halt machine!");
@@ -489,7 +488,7 @@ public class UserProcess {
     private int handleCreat(int name){
     	String filename;
     	filename = readVirtualMemoryString(name,maxLength);
-    	if (filename == null) {
+    	if (filename == null || file.name == "") {
     		return -1;
     	}
     	if (deletedfiles.contains(filename)) {
@@ -643,7 +642,10 @@ public class UserProcess {
 	return 0;
     }
 
-    private int HandleExit(int a0) {    	
+    private int HandleExit(int a0) {
+    	
+		unloadSections();
+
 		exitStatus = a0;
 		/*
 		 * Close all files here
@@ -655,17 +657,6 @@ public class UserProcess {
 			return -1;
 		}
 		
-		unloadSections();
-		
-		/*
-		 * destroy any processes. and terminate kernel if empty, then finish thread
-		 */
-//		for(int i = 0; i < childProcesses.size(); i++) {
-//			childProcesses.get(i).process.handleExit;
-//		}
-
-		
-		
 		
 		if(this.activeProcesses == 1) {
 			Lib.debug(dbgProcess, "ONLY THING, TERMINATING");
@@ -673,18 +664,25 @@ public class UserProcess {
 			Kernel.kernel.terminate();
 			Lib.debug(dbgProcess, "Called");
 			
-		} else {
+		} else if (this.activeProcesses > 1) {
 			Lib.debug(dbgProcess, "Finished call");
-			UThread.finish();
-			this.activeProcesses--;
+			for(int i = 0; i < childProcesses.size(); i++) {
+				childProcesses.get(i).parent = null;
+			}
+			this.childProcesses = null;
+			this.activeProcesses-=1;
 			this.joinSemaphore.V();
+			this.isJoining = false;
+			this.isFinished = true;
+			this.exitStatus = 0;
+			UThread.finish();
 		}
 		return a0;
 	}
 
 	private int HandleJoin(int pid, int status) {
 		 //TODO Auto-generated method stub
-		ChildProcess child;
+		ChildProcess child = null;
 		if(pid < 0) {
 			//debug
 			return -1;
@@ -694,25 +692,29 @@ public class UserProcess {
 			//debug
 			return -1;
 		}
+		byte[] whatever = new byte[4];
 		
 		for(int i = 0; i < childProcesses.size(); i++) {
-			if(childProcesses.get(i).id == pid) {
+			if(childProcesses.get(i).id == pid && !childProcesses.get(i).process.isJoining) {
 				child = childProcesses.get(i);
+				childProcesses.get(i).process.isJoining = true;
 				child.process.joinSemaphore.P();
-			} else {
-				
+				this.childProcesses.remove(i);
+				if(child.process.execptionCause > 9 || child.process.execptionCause < 0) {
+					return 0;
+				}
+				this.writeVirtualMemory(status, Lib.bytesFromInt(child.process.exitStatus));
+			} else if(childProcesses.get(i).process.isFinished) {
+				this.writeVirtualMemory(status, Lib.bytesFromInt(child.process.exitStatus));
+				return 1;
+			}
+			else {
 				//DNE does not exist
 				return -1;
 			}
 		}
-		
-		/*
-		 * should join the child here then remove the child from the linked list.
-		 */
-		
-		
 		// TODO Auto-generated method stub
-		return 0;
+		return 1;
 	}
 
 	private int HandleExec(int file, int argc, int argv) {
@@ -737,8 +739,8 @@ public class UserProcess {
 			fileName = this.readVirtualMemoryString(file,  256);
 			
 			//check filename extenstion .coff?
-			if(fileName == null) {
-				Lib.debug(dbgProcess, "In exec, filename is null");
+			if(fileName == null || !fileName.endsWith(".coff")) {
+				Lib.debug(dbgProcess, "In exec, filename is null OR filename not end in .coff");
 				return -1;
 			}
 			
@@ -759,14 +761,15 @@ public class UserProcess {
 				}
 			}
 			child = UserProcess.newUserProcess();
+			child.parent = this;
 			ChildProcess cp = new ChildProcess(child, child.id,this);
 			childProcesses.add(cp);
+			
 			
 			if(!child.execute(fileName, arguments)) {
 				Lib.debug(dbgProcess, "In exec, child failed to execute.");
 				return -1;
 			}
-			
 			return child.id;
 	}
 
@@ -779,25 +782,25 @@ public class UserProcess {
      * @param	cause	the user exception that occurred.
      */
     public void handleException(int cause) {
-	Processor processor = Machine.processor();
-
-	switch (cause) {
-	case Processor.exceptionSyscall:
-	    int result = handleSyscall(processor.readRegister(Processor.regV0),
-				       processor.readRegister(Processor.regA0),
-				       processor.readRegister(Processor.regA1),
-				       processor.readRegister(Processor.regA2),
-				       processor.readRegister(Processor.regA3)
-				       );
-	    processor.writeRegister(Processor.regV0, result);
-	    processor.advancePC();
-	    break;				       
-				       
-	default:
-	    Lib.debug(dbgProcess, "Unexpected exception: " +
-		      Processor.exceptionNames[cause]);
-	    Lib.assertNotReached("Unexpected exception");
-	}
+		Processor processor = Machine.processor();
+		this.execptionCause = cause;
+		switch (cause) {
+		case Processor.exceptionSyscall:
+		    int result = handleSyscall(processor.readRegister(Processor.regV0),
+					       processor.readRegister(Processor.regA0),
+					       processor.readRegister(Processor.regA1),
+					       processor.readRegister(Processor.regA2),
+					       processor.readRegister(Processor.regA3)
+					       );
+		    processor.writeRegister(Processor.regV0, result);
+		    processor.advancePC();
+		    break;				       
+					       
+		default:
+		    Lib.debug(dbgProcess, "Unexpected exception: " +
+			      Processor.exceptionNames[cause]);
+		    Lib.assertNotReached("Unexpected exception");
+		}
     }
 
     public class DescriptorManager{
@@ -896,12 +899,11 @@ public class UserProcess {
     public static boolean rootExists = false;
     private int exitStatus;
     public Semaphore joinSemaphore = new Semaphore(0);
-	
     private static final int pageSize = Processor.pageSize;
     private static final char dbgProcess = 'a';
     protected static LinkedList<Integer> activeProcess = new LinkedList<Integer>();
     
-    protected static UThread UserThread;
+    protected UThread UserThread;
     public UserProcess parent= null;
-    static int activeProcesses = 0;
+    protected static int activeProcesses = 0;
 }
